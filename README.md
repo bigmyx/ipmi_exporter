@@ -8,6 +8,7 @@ Requirements
 1. Python (tested with 2.7)
 2. Python [prometheus_client](https://github.com/prometheus/client_python) module
 3. Docker engine (optional)
+4. `ipmitool` command
 
 
 Run using Docker
