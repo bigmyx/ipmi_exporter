@@ -20,9 +20,9 @@ $ docker build -t <hub_user>/ipmi_exporter:v1 .
 Run the container
 ```
 docker run \
-	-p8000:8000 -d -ti \
--e "TARGET_IPS=192.168.0.1,192.168.0.2" \
-<hub_user>/ipmi_exporter:v1
+   -p8000:8000 -d -ti \
+   -e "TARGET_IPS=192.168.0.1,192.168.0.2" \
+   <hub_user>/ipmi_exporter:v1
 ```
 Verify
 ```
