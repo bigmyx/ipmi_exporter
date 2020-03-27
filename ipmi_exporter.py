@@ -13,60 +13,74 @@ try:
 except AttributeError:
     raise Exception("Mandatory `TARGET_IPS` environment variable is not set")
 
-IPMI_USER = os.getenv('IPMI_USER', 'ADMIN')
-IPMI_PASSWD = os.getenv('IPMI_PASSWD', 'ADMIN')
+IPMI_USER = os.getenv('IPMI_USER', 'Administrator')
+IPMI_PASSWD = os.getenv('IPMI_PASSWD', '')
 
 REQURED = [
     "CPU1 Temp",
     "System Temp",
     "FAN1"
 ]
-# Create a metric to track time spent and requests made.
 REQUEST_TIME = Summary('request_processing_seconds', 'Time spent processing request')
 
-
-def _run_cmd(ip, raw):
+def _run_cmd(ip, tool, args, raw):
     logging.info("Collecting from target %s", ip)
-    proc = subprocess.Popen(["ipmitool",
-                             "-H", ip,
-                             "-U", IPMI_USER,
-                             "-P", IPMI_PASSWD,
-                             "sdr"], stdout=subprocess.PIPE)
+    proc = subprocess.Popen(["ipmi-" + tool,
+                             "-h", ip,
+                             "-u", IPMI_USER,
+                             "-p", IPMI_PASSWD,
+                             "--driver-type", "LAN_2_0",
+                            ] + args, stdout=subprocess.PIPE)
     out = proc.communicate()[0]
-    raw += [x.rstrip() for x in out.split('|')]
+    raw += out.split('\n')
 
+def stripArr(arr):
+    return [z.rstrip().lstrip() for z in arr]
 
 class IpmiCollector(object):
     @REQUEST_TIME.time()
     def collect(self):
-        sys_metrics = {
-            'cpu_temp': GaugeMetricFamily('ipmi_cpu_temp', 'CPU temp', labels=['ip']),
-            'system_temp': GaugeMetricFamily('ipmi_system_temp', 'System temp', labels=['ip']),
-            'fan_speed': GaugeMetricFamily('ipmi_fan_speed', 'Fan speed', labels=['ip'])
+        metrics = {
+            'temp': GaugeMetricFamily('ipmi_temp', 'Temperature', labels=['ip', 'id', 'entity']),
+            'power': GaugeMetricFamily('ipmi_power', 'Power Usage', labels=['ip', 'type']),
         }
         raw = Manager().list([])
+        raw2 = Manager().list([])
+
         for ip in IPS:
-            # This is an attempt to run the `ipmi` tool in parallel
-            # to avoid timeouts in Prometheus
-            p = Process(target=_run_cmd, args=(ip, raw))
+            # ipmi-sensors -h 192.168.1.125 -u Administrator -p ****** --driver-type LAN_2_0 --comma-separated-output
+            p = Process(target=_run_cmd, args=(ip, 'sensors', ['--entity-sensor-names', '--comma-separated-output'], raw))
             logging.info("Start collecting the metrics")
             p.start()
             p.join()
-            all_metrics = dict(itertools.izip_longest(*[iter(raw)] * 2, fillvalue=""))
-            for k, v in all_metrics.items():
-                for r in REQURED:
-                    if r in k:
-                        value = [int(s) for s in v.split() if s.isdigit()][0]
-                        if 'CPU' in k:
-                            sys_metrics['cpu_temp'].add_metric([ip], value)
-                        elif 'System' in k:
-                            sys_metrics['system_temp'].add_metric([ip], value)
-                        elif 'FAN' in k:
-                            sys_metrics['fan_speed'].add_metric([ip], value)
-                        else:
-                            logging.error("Undefined metric: %s", k)
+            raw.pop(0)
+            all_metrics = [x.split(',') for x in raw]
+            # ipmi-dcmi -h 192.168.1.125 -u Administrator -p ****** --driver-type LAN_2_0 --get-system-power-statistics
+            p2 = Process(target=_run_cmd, args=(ip, 'dcmi', ['--get-system-power-statistics'], raw2))
+            p2.start()
+            p2.join()
 
-        for metric in sys_metrics.values():
+            power_metrics = [x.split(':') for x in raw2]
+            power_metrics.pop(len(power_metrics) - 1)
+            power_metrics = [stripArr(y) for y in power_metrics]
+
+            for v in all_metrics:
+                if len(v) < 2: continue
+                if 'Temperature' == v[2] and v[3] != 'N/A':
+                        metrics['temp'].add_metric([ip, v[0], v[1]], float(v[3]))
+            for v in power_metrics:
+                if len(v) < 2: continue
+                print(v)
+                if 'Current Power' == v[0]:
+                    metrics['power'].add_metric([ip, 'currentPower'], int(v[1].split(' ')[0]))
+                if 'Minimum Power over sampling duration' == v[0]:
+                    metrics['power'].add_metric([ip, 'minSamplePower'], int(v[1].split(' ')[0]))
+                if 'Maximum Power over sampling duration' == v[0]:
+                    metrics['power'].add_metric([ip, 'maxSamplePower'], int(v[1].split(' ')[0]))
+                if 'Average Power over sampling duration' == v[0]:
+                    metrics['power'].add_metric([ip, 'avgSamplePower'], int(v[1].split(' ')[0]))
+
+        for metric in metrics.values():
             yield metric
 
 
